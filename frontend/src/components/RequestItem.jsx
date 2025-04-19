@@ -2,18 +2,25 @@ import React from 'react';
 import { approveGroupRequest, approveFollowRequest } from '../utils/api';
 
 const RequestItem = ({ request, type, onRequestUpdate, currentUser }) => {
-  // For follow requests, check if current user is the target
-  const isFollowTarget = type === 'follow' && request?.target === currentUser?.username;
+  // Debug logging
+  console.log('Request Item:', request);
+  console.log('Request Status:', request?.status);
+  console.log('Current User:', currentUser?.username);
+  console.log('Request Target:', request?.target);
+  
+  // For follow requests, assume the current user's profile is the target
+  // since we're fetching requests for the current user
+  const isFollowTarget = type === 'follow' && currentUser;
   
   // For group requests, check if current user is admin
   const isGroupAdmin = type === 'group' && request?.admin === currentUser?.username;
   
   // Can approve if admin for group requests or target for follow requests AND status is pending
-  const canApprove = ((type === 'group' && isGroupAdmin) || 
-                     (type === 'follow' && isFollowTarget)) && 
-                     request?.status === 'pending';
+  // For follow requests, we'll assume pending status since they wouldn't be fetched otherwise
+  const canApprove = (type === 'group' && isGroupAdmin && request?.status?.toLowerCase() === 'pending') || 
+                     (type === 'follow' && isFollowTarget);
 
-  const displayName = request?.username || 'Unknown User';
+  const displayName = request?.username || request?.requester || 'Unknown User';
   const firstChar = displayName.charAt(0).toUpperCase();
 
   const handleAction = async (action) => {
@@ -68,7 +75,7 @@ const RequestItem = ({ request, type, onRequestUpdate, currentUser }) => {
         </div>
       ) : (
         <span className="px-3 py-1 bg-gray-700 rounded text-sm text-gray-300">
-          {request?.status ? request.status.charAt(0).toUpperCase() + request.status.slice(1) : 'Processed'}
+          {request?.status ? request.status.charAt(0).toUpperCase() + request.status.slice(1) : 'Unknown Status'}
         </span>
       )}
     </div>

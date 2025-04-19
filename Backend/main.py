@@ -149,7 +149,6 @@ def get_user(username: str):
         "tweets": tweets_data,
         "followers": followers_data
     }
-
 @app.post("/new_user")
 async def create_user(
     username: str = Form(...),
@@ -165,8 +164,8 @@ async def create_user(
     # Process photo if provided
     photo_base64 = ""
     if photo:
-        photo_hex = binary_from_photo_object(photo)
-        photo_base64 = hex_to_base64(photo_hex)
+        # Just get the base64 directly - no need for intermediate hex conversion
+        photo_base64 = binary_from_photo_object(photo)
     
     joined_from = datetime.today().strftime('%Y-%m-%d')
     
@@ -929,29 +928,34 @@ async def approve_group_request(
         return {"status": "success", "message": "Request rejected"}
 
 # Follow Request Endpoints
-@app.post("/request_follow/{follower}/{following}")
-async def request_follow(follower: str, following: str):
-    """Request to follow another user"""
-    # First check if already following
-    check_follow_query = "SELECT * FROM follows WHERE follower = %s AND follows = %s"
-    existing_follow = execute_query(check_follow_query, (follower, following))
-    
-    if existing_follow:
-        raise HTTPException(status_code=400, detail="Already following this user")
-    
-    # Then check if request already exists
-    check_request_query = "SELECT * FROM follow_requests WHERE requester = %s AND target = %s AND status = 'pending'"
-    existing_request = execute_query(check_request_query, (follower, following))
+@app.post("/request_follow/{requester}/{target}")
+async def request_follow(requester: str, target: str):
+    """Send a follow request"""
+    # Check if follow request already exists
+    check_query = """
+    SELECT id FROM follow_requests 
+    WHERE requester = %s AND target = %s AND status = 'pending'
+    """
+    existing_request = execute_query(check_query, (requester, target))
     
     if existing_request:
         raise HTTPException(status_code=400, detail="Follow request already pending")
     
-    # If neither exists, create a new follow request
-    query = """
-        INSERT INTO follow_requests (requester, target, status)
-        VALUES (%s, %s, 'pending')
+    # Check if already following
+    check_following_query = "SELECT * FROM follows WHERE follower = %s AND follows = %s"
+    already_following = execute_query(check_following_query, (requester, target))
+    
+    if already_following:
+        raise HTTPException(status_code=400, detail="Already following this user")
+    
+    # Create follow request
+    insert_query = """
+    INSERT INTO follow_requests 
+    (requester, target, status, request_time) 
+    VALUES (%s, %s, 'pending', NOW())
     """
-    execute_query(query, (follower, following), fetch=False, commit=True)
+    execute_query(insert_query, (requester, target), fetch=False, commit=True)
+    
     return {"status": "success", "message": "Follow request sent"}
 
 
@@ -960,6 +964,7 @@ def get_follow_requests(username: str):
     """Get all pending follow requests for a user"""
     query = """
     SELECT follow_requests.id, follow_requests.requester, follow_requests.request_time,
+           follow_requests.status, follow_requests.target,
            users.photo AS user_photo
     FROM follow_requests 
     INNER JOIN users ON follow_requests.requester = users.username
@@ -973,11 +978,11 @@ def get_follow_requests(username: str):
 @app.post("/approve_follow_request")
 async def approve_follow_request(
     request_id: int = Form(...),
-    action: str = Form(...)  # 'approve' or 'reject'
+    action: str = Form(...)  # 'approved' or 'rejected'
 ):
     """Approve or reject a follow request"""
     # Get request details
-    check_query = "SELECT requester, target FROM follow_requests WHERE id = %s"
+    check_query = "SELECT requester, target, status FROM follow_requests WHERE id = %s"
     request_data = execute_query(check_query, (request_id,))
     
     if not request_data:
@@ -1006,6 +1011,7 @@ async def approve_follow_request(
     else:
         return {"status": "success", "message": "Follow request rejected"}
     
+
 # Remove member from group (admin function)
 @app.post("/remove_group_member")
 async def remove_group_member(
