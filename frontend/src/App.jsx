@@ -11,16 +11,24 @@ import Groups from './pages/Groups';
 import GroupDetail from './pages/GroupDetails';
 import Messages from './pages/Messages';
 import Users from './pages/Users';
+import { getAuthToken, removeAuthToken } from './utils/api';
 
 function App() {
   const [currentUser, setCurrentUser] = useState(null);
+  const [loading, setLoading] = useState(true);
   
-  // Check for stored user on load
+  // Check for stored user and token on load
   useEffect(() => {
+    const token = getAuthToken();
     const storedUser = localStorage.getItem('currentUser');
-    if (storedUser) {
+    
+    if (token && storedUser) {
       setCurrentUser(JSON.parse(storedUser));
+    } else {
+      removeAuthToken();
+      localStorage.removeItem('currentUser');
     }
+    setLoading(false);
   }, []);
 
   const handleLogin = (user) => {
@@ -30,8 +38,17 @@ function App() {
 
   const handleLogout = () => {
     setCurrentUser(null);
+    removeAuthToken();
     localStorage.removeItem('currentUser');
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-900">
+        <div className="text-blue-400">Loading...</div>
+      </div>
+    );
+  }
 
   return (
     <Router>
@@ -72,10 +89,9 @@ function App() {
             <Route path="/messages" element={
               currentUser ? <Messages currentUser={currentUser} /> : <Navigate to="/login" />
             } />
-            { <Route path="/users" element={
+            <Route path="/users" element={
               currentUser ? <Users currentUser={currentUser} /> : <Navigate to="/login" />
-            } /> }
-            
+            } />
           </Routes>
         </div>
       </div>

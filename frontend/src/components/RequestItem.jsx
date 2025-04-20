@@ -7,12 +7,22 @@ const RequestItem = ({ request, type, onRequestUpdate, currentUser }) => {
   console.log('Request Status:', request?.status);
   console.log('Current User:', currentUser?.username);
   console.log('Type:', type);
+  console.log('Request Admin:', request?.admin);
   
   // For follow requests, check if current user is the target of the follow request
   const isFollowTarget = type === 'follow' && request?.target === currentUser?.username;
   
   // For group requests, check if current user is admin
   const isGroupAdmin = type === 'group' && request?.admin === currentUser?.username;
+  
+  // Additional debug log for group admin check
+  if (type === 'group') {
+    console.log('Group Admin Check:', {
+      requestAdmin: request?.admin,
+      currentUsername: currentUser?.username,
+      isGroupAdmin: isGroupAdmin
+    });
+  }
   
   // Can approve/reject if:
   // - For group requests: user is admin AND status is pending

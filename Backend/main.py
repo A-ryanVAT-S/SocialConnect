@@ -1,18 +1,42 @@
-from fastapi import FastAPI, Form, File, UploadFile, Request, HTTPException
+from fastapi import FastAPI, Form, File, UploadFile, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from typing import Optional
 import pymysql
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta,timezone
 import codecs
 import uvicorn
 import os
 from dotenv import load_dotenv
+import jwt as pyjwt
+from passlib.context import CryptContext
+from pydantic import BaseModel
 
 # Load environment variables from .env file
 load_dotenv()
 
 app = FastAPI(title="SocialConnect API")
+
+# JWT Configuration
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "temp_3x@mpl3_s3cr3t_k3y_2025")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# OAuth2 scheme
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# Models
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class UserAuth(BaseModel):
+    username: str
+    password: str
 
 # CORS Configuration
 app.add_middleware(
@@ -90,6 +114,38 @@ def binary_from_photo_object(photo_obj):
     content = photo_obj.file.read()
     return base64.b64encode(content).decode("utf-8")
 
+# Password hashing functions
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+# JWT functions
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.now(timezone.utc) + expires_delta
+    else:
+        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = pyjwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = pyjwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+        return username
+    except pyjwt.PyJWTError:
+        raise credentials_exception
 
 # Root Endpoint
 @app.get("/")
@@ -105,19 +161,71 @@ def home():
             "POST /new_comment",
             "POST /new_follow",
             "POST /new_like",
+            "POST /token",
+            "GET /me",
             "And many more..."
         ]
     }
 
+# Authentication Endpoints
+@app.post("/token", response_model=Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    # Check if user exists
+    user_query = "SELECT * FROM users WHERE username = %s"
+    user_data = execute_query(user_query, (form_data.username,))
+    
+    if not user_data:
+        raise HTTPException(
+            status_code=400,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    user = user_data[0]
+    
+    # Verify password
+    if not verify_password(form_data.password, user['password']):
+        raise HTTPException(
+            status_code=400,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Create access token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user['username']}, expires_delta=access_token_expires
+    )
+    
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/me")
+def get_current_user_info(current_user: str = Depends(get_current_user)):
+    user_query = "SELECT * FROM users WHERE username = %s"
+    user_data = execute_query(user_query, (current_user,))
+    
+    if not user_data:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Remove password from response
+    if user_data[0].get('password'):
+        del user_data[0]['password']
+    
+    return user_data[0]
+
 # User Endpoints
 @app.get("/user/{username}")
-def get_user(username: str):
+def get_user(username: str, current_user: str = Depends(get_current_user)):
     # Get user profile
     user_query = "SELECT * FROM users WHERE username = %s"
     user_data = execute_query(user_query, (username,))
     
     if not user_data:
         raise HTTPException(status_code=404, detail="User not found")
+    
+    # Remove password from response
+    if user_data[0].get('password'):
+        del user_data[0]['password']
     
     # Get user tweets
     tweets_query = """
@@ -142,9 +250,11 @@ def get_user(username: str):
         "tweets": tweets_data,
         "followers": followers_data
     }
+
 @app.post("/new_user")
 async def create_user(
     username: str = Form(...),
+    password: str = Form(...),  # Add password field
     location: str = Form(...),
     bio: str = Form(...),
     mailid: str = Form(...),
@@ -157,8 +267,8 @@ async def create_user(
     # Process photo if provided
     photo_base64 = ""
     if photo:
-        # Just get the base64 directly - no need for intermediate hex conversion
-        photo_base64 = binary_from_photo_object(photo)
+        content = await photo.read()
+        photo_base64 = base64.b64encode(content).decode("utf-8")
     
     joined_from = datetime.today().strftime('%Y-%m-%d')
     
@@ -169,25 +279,29 @@ async def create_user(
     if existing_user:
         raise HTTPException(status_code=409, detail="Username already exists")
     
-    # Insert new user
+    # Hash the password
+    hashed_password = get_password_hash(password)
+    
+    # Insert new user with hashed password
     insert_query = """
     INSERT INTO users 
-    (username, location, bio, mailid, website, fname, lname, photo, dateofbirth, joined_from) 
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    (username, password, location, bio, mailid, website, fname, lname, photo, dateofbirth, joined_from) 
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
-    params = (username, location, bio, mailid, website, firstname, lastname, 
+    params = (username, hashed_password, location, bio, mailid, website, firstname, lastname, 
               photo_base64, dateofbirth, joined_from)
     
     execute_query(insert_query, params, fetch=False, commit=True)
     
     return {"status": "success", "message": "User created successfully"}
 
-# Feed Endpoints
+
 @app.get("/feed/{username}")
 def get_feed(username: str):
+    # Get tweets from users that the current user follows (and user's own tweets)
     query = """
     SELECT users.username, CONCAT(users.fname, ' ', users.lname) AS author, 
-           users.photo AS userphoto, tweet.tweetid, tweet.content_, tweet.photo
+           users.photo AS userphoto, tweet.tweetid, tweet.content_, tweet.photo, tweet.time_
     FROM tweet INNER JOIN users ON
     tweet.author = users.username  
     WHERE (users.username IN 
@@ -196,12 +310,30 @@ def get_feed(username: str):
     ORDER BY tweet.time_ DESC
     """
     
-    data = execute_query(query, (username, username))
-    return {"data": data}
+    tweets = execute_query(query, (username, username))
+    
+    # For each tweet, get likes information
+    for tweet in tweets:
+        tweet_id = tweet["tweetid"]
+        
+        # Get users who liked this tweet
+        likes_query = """
+        SELECT users.username, users.photo AS userphoto
+        FROM users INNER JOIN like_ ON
+        users.username = like_.username AND like_.tweetid = %s
+        """
+        likes = execute_query(likes_query, (tweet_id,))
+        
+        # Add likes information to the tweet
+        tweet["likes"] = likes
+        tweet["like_count"] = len(likes)
+        tweet["liked_by_user"] = any(like["username"] == username for like in likes)
+    
+    return {"data":tweets}
 
-
+# Tweet Endpoints
 @app.get("/tweet/{tweet_id}")
-def get_tweet(tweet_id: int):
+def get_tweet(tweet_id: int, current_user: str = Depends(get_current_user)):
     query = """
     SELECT users.username, CONCAT(users.fname, ' ', users.lname) AS author, 
            users.photo AS userphoto, tweet.tweetid, tweet.content_, tweet.photo, tweet.time_
@@ -217,7 +349,7 @@ def get_tweet(tweet_id: int):
     return data
 
 @app.get("/full_tweet/{tweet_id}")
-def get_full_tweet(tweet_id: int):
+def get_full_tweet(tweet_id: int, current_user: str = Depends(get_current_user)):
     # Get tweet data
     tweet_query = """
     SELECT users.username, CONCAT(users.fname, ' ', users.lname) AS author, 
@@ -262,46 +394,48 @@ async def create_tweet(
     username: str = Form(...),
     content: str = Form(...),
     photo: Optional[UploadFile] = File(None),
-    group_name: Optional[str] = Form(None)
+    group_name: Optional[str] = Form(None),
+    current_user: str = Depends(get_current_user)
 ):
+    # Validate that the username matches the authenticated user
+    if username != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to post as another user")
+    
     try:
-        connection = pymysql.connect(**DB_CONFIG)
-        with connection.cursor() as cursor:
-            # Generate a unique tweet ID
-            cursor.execute("SELECT MAX(tweetid) FROM tweet")
-            result = cursor.fetchone()
-            new_tweet_id = (result['MAX(tweetid)'] or 0) + 1
-            
-            # Process photo if provided
-            photo_data = None
-            if photo:
-                contents = await photo.read()
-                photo_data = base64.b64encode(contents).decode('utf-8')
-            
-            # Insert tweet
-            query = """
-            INSERT INTO tweet (tweetid, content_, photo, author, group_name)
-            VALUES (%s, %s, %s, %s, %s)
-            """
-            cursor.execute(query, (new_tweet_id, content, photo_data, username, group_name))
-            connection.commit()
-            
-            return {"status": "success", "tweet_id": new_tweet_id}
+        # Process photo if provided
+        photo_data = None
+        if photo:
+            contents = await photo.read()
+            photo_data = base64.b64encode(contents).decode('utf-8')
+        
+        # Generate a unique tweet ID
+        id_query = "SELECT COALESCE(MAX(tweetid), 0) + 1 AS next_id FROM tweet"
+        next_id_data = execute_query(id_query)
+        new_tweet_id = next_id_data[0]["next_id"] if next_id_data else 1
+        
+        # Insert tweet
+        query = """
+        INSERT INTO tweet (tweetid, content_, photo, author, group_name)
+        VALUES (%s, %s, %s, %s, %s)
+        """
+        execute_query(query, (new_tweet_id, content, photo_data, username, group_name), fetch=False, commit=True)
+        
+        return {"status": "success", "tweet_id": new_tweet_id}
     except Exception as e:
         print(f"Error creating tweet: {e}")
-        return {"error": str(e)}
-    finally:
-        connection.close()
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/delete_tweet/{tweet_id}")
-def delete_tweet(tweet_id: int):
-    # Check if tweet exists
-    check_query = "SELECT tweetid FROM tweet WHERE tweetid = %s"
+def delete_tweet(tweet_id: int, current_user: str = Depends(get_current_user)):
+    # Check if tweet exists and is owned by the current user
+    check_query = "SELECT tweetid, author FROM tweet WHERE tweetid = %s"
     tweet = execute_query(check_query, (tweet_id,))
     
     if not tweet:
         raise HTTPException(status_code=404, detail="Tweet not found")
+    
+    if tweet[0]["author"] != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this tweet")
     
     # Delete tweet
     delete_query = "DELETE FROM tweet WHERE tweetid = %s"
@@ -310,7 +444,7 @@ def delete_tweet(tweet_id: int):
     return {"status": "success", "message": "Tweet deleted"}
 
 @app.get("/all_followers/{username}")
-def get_all_followers(username: str):
+def get_all_followers(username: str, current_user: str = Depends(get_current_user)):
     """Get all followers for a specific user"""
     query = """
     SELECT users.username, users.photo, CONCAT(users.fname, ' ', users.lname) AS full_name 
@@ -322,12 +456,18 @@ def get_all_followers(username: str):
     
     data = execute_query(query, (username,))
     return data
+
 # Like Endpoints
 @app.post("/new_like")
 async def like_tweet(
     tweet_id: int = Form(...),
-    user_id: str = Form(...)
+    user_id: str = Form(...),
+    current_user: str = Depends(get_current_user)
 ):
+    # Ensure user is liking as themselves
+    if user_id != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to like as another user")
+    
     # Check if already liked
     check_query = "SELECT * FROM like_ WHERE tweetid = %s AND username = %s"
     existing_like = execute_query(check_query, (tweet_id, user_id))
@@ -344,8 +484,13 @@ async def like_tweet(
 @app.post("/new_unlike")
 async def unlike_tweet(
     tweet_id: int = Form(...),
-    user_id: str = Form(...)
+    user_id: str = Form(...),
+    current_user: str = Depends(get_current_user)
 ):
+    # Ensure user is unliking as themselves
+    if user_id != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to unlike as another user")
+    
     # Delete like
     delete_query = "DELETE FROM like_ WHERE tweetid = %s AND username = %s"
     execute_query(delete_query, (tweet_id, user_id), fetch=False, commit=True)
@@ -353,7 +498,7 @@ async def unlike_tweet(
     return {"status": "success", "message": "Tweet unliked"}
 
 @app.get("/likes_by_tweeter_id/{tweet_id}")
-def get_likes(tweet_id: int):
+def get_likes(tweet_id: int, current_user: str = Depends(get_current_user)):
     query = """
     SELECT users.username, users.photo AS userphoto
     FROM users INNER JOIN like_ ON
@@ -368,8 +513,13 @@ def get_likes(tweet_id: int):
 async def create_comment(
     tweet_id: int = Form(...),
     username: str = Form(...),
-    content: str = Form(...)
+    content: str = Form(...),
+    current_user: str = Depends(get_current_user)
 ):
+    # Ensure user is commenting as themselves
+    if username != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to comment as another user")
+    
     # Insert comment
     insert_query = """
     INSERT INTO comment_ (time_, tweetid, username, content_) 
@@ -381,7 +531,7 @@ async def create_comment(
     return {"status": "success", "message": "Comment added"}
 
 @app.get("/comments_by_tweeter_id/{tweet_id}")
-def get_comments(tweet_id: int):
+def get_comments(tweet_id: int, current_user: str = Depends(get_current_user)):
     query = """
     SELECT comment_.time_, comment_._id, comment_.tweetid, comment_.content_, 
            users.username, CONCAT(users.fname, ' ', users.lname) AS author, users.photo AS userphoto 
@@ -394,7 +544,17 @@ def get_comments(tweet_id: int):
     return data
 
 @app.get("/delete_comment/{comment_id}")
-def delete_comment(comment_id: int):
+def delete_comment(comment_id: int, current_user: str = Depends(get_current_user)):
+    # Check if comment exists and belongs to current user
+    check_query = "SELECT _id, username FROM comment_ WHERE _id = %s"
+    comment = execute_query(check_query, (comment_id,))
+    
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    
+    if comment[0]["username"] != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this comment")
+    
     delete_query = "DELETE FROM comment_ WHERE _id = %s"
     execute_query(delete_query, (comment_id,), fetch=False, commit=True)
     
@@ -402,7 +562,11 @@ def delete_comment(comment_id: int):
 
 # Follow Endpoints
 @app.get("/new_follow")
-def follow_user(curuser: str, user: str):
+def follow_user(curuser: str, user: str, current_user: str = Depends(get_current_user)):
+    # Ensure user is following as themselves
+    if curuser != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to follow as another user")
+    
     # Check if already following
     check_query = "SELECT * FROM follows WHERE follower = %s AND follows = %s"
     existing_follow = execute_query(check_query, (curuser, user))
@@ -417,7 +581,11 @@ def follow_user(curuser: str, user: str):
     return {"status": "success", "message": "User followed", "curuser": curuser, "user": user}
 
 @app.get("/new_unfollow")
-def unfollow_user(curuser: str, user: str):
+def unfollow_user(curuser: str, user: str, current_user: str = Depends(get_current_user)):
+    # Ensure user is unfollowing as themselves
+    if curuser != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to unfollow as another user")
+    
     # Delete follow
     delete_query = "DELETE FROM follows WHERE follower = %s AND follows = %s"
     execute_query(delete_query, (curuser, user), fetch=False, commit=True)
@@ -425,7 +593,7 @@ def unfollow_user(curuser: str, user: str):
     return {"status": "success", "message": "User unfollowed", "curuser": curuser, "user": user}
 
 @app.get("/is_following")
-def check_following(curuser: str, user: str):
+def check_following(curuser: str, user: str, current_user: str = Depends(get_current_user)):
     query = "SELECT * FROM follows WHERE follower = %s AND follows = %s"
     data = execute_query(query, (curuser, user))
     
@@ -435,9 +603,13 @@ def check_following(curuser: str, user: str):
 
 # Poll Endpoints
 @app.post("/new_poll")
-async def create_poll(request: Request):
+async def create_poll(request: Request, current_user: str = Depends(get_current_user)):
     form_data = await request.form()
     data = dict(form_data)
+    
+    # Ensure user is creating poll as themselves
+    if data["username"] != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to create poll as another user")
     
     # Get next poll id
     id_query = "SELECT COALESCE(MAX(id_), 0) + 1 AS next_id FROM poll"
@@ -462,7 +634,7 @@ async def create_poll(request: Request):
     return {"status": "success", "message": "Poll created", "poll_id": poll_id}
 
 @app.get("/poll/{poll_id}")
-def get_poll(poll_id: int):
+def get_poll(poll_id: int, current_user: str = Depends(get_current_user)):
     # Get poll details
     poll_query = """
     SELECT poll.id_ AS poll_id, poll.content_, poll.poll_by, poll_option.option_
@@ -507,8 +679,13 @@ def get_poll(poll_id: int):
 async def cast_vote(
     username: str = Form(...),
     poll_id: int = Form(...),
-    option: str = Form(...)
+    option: str = Form(...),
+    current_user: str = Depends(get_current_user)
 ):
+    # Ensure user is voting as themselves
+    if username != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to vote as another user")
+    
     # Check if already voted
     check_query = "SELECT * FROM vote WHERE username = %s AND poll_id = %s"
     existing_vote = execute_query(check_query, (username, poll_id))
@@ -523,7 +700,7 @@ async def cast_vote(
     return {"status": "success", "message": "Vote cast"}
 
 @app.get("/poll_feed")
-def get_poll_feed():
+def get_poll_feed(current_user: str = Depends(get_current_user)):
     query = """
     SELECT poll.id_, poll.content_, poll.poll_by, users.photo, 
            CONCAT(users.fname, ' ', users.lname) AS name, users.username 
@@ -536,13 +713,16 @@ def get_poll_feed():
     return data
 
 @app.get("/delete_poll/{poll_id}")
-def delete_poll(poll_id: int):
-    # Check if poll exists
-    check_query = "SELECT id_ FROM poll WHERE id_ = %s"
+def delete_poll(poll_id: int, current_user: str = Depends(get_current_user)):
+    # Check if poll exists and belongs to current user
+    check_query = "SELECT id_, poll_by FROM poll WHERE id_ = %s"
     poll = execute_query(check_query, (poll_id,))
     
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found")
+    
+    if poll[0]["poll_by"] != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this poll")
     
     # Delete poll (cascade should handle related records)
     delete_query = "DELETE FROM poll WHERE id_ = %s"
@@ -550,13 +730,19 @@ def delete_poll(poll_id: int):
     
     return {"status": "success", "message": "Poll deleted"}
 
+# Group Endpoints
 @app.post("/new_group")
 async def create_group(
     admin: str = Form(...),
     groupname: str = Form(...),
     groupbio: str = Form(...),
-    groupphoto: Optional[UploadFile] = File(None)
+    groupphoto: Optional[UploadFile] = File(None),
+    current_user: str = Depends(get_current_user)
 ):
+    # Ensure user is creating group as themselves
+    if admin != current_user:
+        raise HTTPException(status_code=403, detail="Not authorized to create group as another user")
+    
     # Process photo if provided
     photo_base64 = ""
     if groupphoto:
@@ -584,7 +770,7 @@ async def create_group(
     return {"status": "success", "message": "Group created", "groupname": groupname}
 
 @app.get("/all_groups")
-def get_all_groups():
+def get_all_groups(current_user: str = Depends(get_current_user)):
     query = "SELECT grpname, photo FROM group_"
     data = execute_query(query)
     return data

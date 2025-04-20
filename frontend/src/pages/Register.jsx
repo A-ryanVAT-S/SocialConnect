@@ -1,12 +1,12 @@
-// src/pages/Register.jsx
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { createUser } from '../utils/api';
+import { createUser, loginUser } from '../utils/api';
 
 const Register = ({ onLogin }) => {
   const navigate = useNavigate();
   const [formData, setFormData] = useState({
     username: '',
+    password: '',
     mailid: '',
     firstname: '',
     lastname: '',
@@ -44,10 +44,13 @@ const Register = ({ onLogin }) => {
     
     try {
       await createUser(formData);
-      onLogin({ username: formData.username });
+      
+      // Automatically log in after registration
+      const userData = await loginUser(formData.username, formData.password);
+      onLogin(userData);
       navigate('/');
     } catch (err) {
-      setError('Registration failed. Please try again.');
+      setError(err.message || 'Registration failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -55,7 +58,7 @@ const Register = ({ onLogin }) => {
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-gray-900 p-4">
-      <div className="w-full max-w-md p-8 bg-gray-800 rounded-lg shadow-md">
+      <div className="w-full max-w-2xl p-8 bg-gray-800 rounded-lg shadow-md">
         <h2 className="text-2xl font-bold text-center text-blue-400 mb-8">Create an Account</h2>
         
         {error && (
@@ -82,6 +85,23 @@ const Register = ({ onLogin }) => {
             </div>
             
             <div className="mb-4">
+              <label htmlFor="password" className="block mb-1 text-sm font-medium">
+                Password*
+              </label>
+              <input
+                type="password"
+                id="password"
+                name="password"
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
+                value={formData.password}
+                onChange={handleChange}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="mb-4">
               <label htmlFor="mailid" className="block mb-1 text-sm font-medium">
                 Email*
               </label>
@@ -95,9 +115,7 @@ const Register = ({ onLogin }) => {
                 required
               />
             </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
+            
             <div className="mb-4">
               <label htmlFor="firstname" className="block mb-1 text-sm font-medium">
                 First Name*
@@ -112,7 +130,9 @@ const Register = ({ onLogin }) => {
                 required
               />
             </div>
-            
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
             <div className="mb-4">
               <label htmlFor="lastname" className="block mb-1 text-sm font-medium">
                 Last Name*
@@ -127,21 +147,21 @@ const Register = ({ onLogin }) => {
                 required
               />
             </div>
-          </div>
-
-          <div className="mb-4">
-            <label htmlFor="location" className="block mb-1 text-sm font-medium">
-              Location
-            </label>
-            <input
-              type="text"
-              id="location"
-              name="location"
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
-              value={formData.location}
-              onChange={handleChange}
-              required
-            />
+            
+            <div className="mb-4">
+              <label htmlFor="location" className="block mb-1 text-sm font-medium">
+                Location
+              </label>
+              <input
+                type="text"
+                id="location"
+                name="location"
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
+                value={formData.location}
+                onChange={handleChange}
+                required
+              />
+            </div>
           </div>
 
           <div className="mb-4">
@@ -159,34 +179,36 @@ const Register = ({ onLogin }) => {
             ></textarea>
           </div>
 
-          <div className="mb-4">
-            <label htmlFor="website" className="block mb-1 text-sm font-medium">
-              Website
-            </label>
-            <input
-              type="url"
-              id="website"
-              name="website"
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
-              value={formData.website}
-              onChange={handleChange}
-              required
-            />
-          </div>
-
-          <div className="mb-4">
-            <label htmlFor="dateofbirth" className="block mb-1 text-sm font-medium">
-              Date of Birth
-            </label>
-            <input
-              type="date"
-              id="dateofbirth"
-              name="dateofbirth"
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
-              value={formData.dateofbirth}
-              onChange={handleChange}
-              required
-            />
+          <div className="grid grid-cols-2 gap-4">
+            <div className="mb-4">
+              <label htmlFor="website" className="block mb-1 text-sm font-medium">
+                Website
+              </label>
+              <input
+                type="url"
+                id="website"
+                name="website"
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
+                value={formData.website}
+                onChange={handleChange}
+                required
+              />
+            </div>
+            
+            <div className="mb-4">
+              <label htmlFor="dateofbirth" className="block mb-1 text-sm font-medium">
+                Date of Birth
+              </label>
+              <input
+                type="date"
+                id="dateofbirth"
+                name="dateofbirth"
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
+                value={formData.dateofbirth}
+                onChange={handleChange}
+                required
+              />
+            </div>
           </div>
 
           <div className="mb-6">
@@ -222,7 +244,7 @@ const Register = ({ onLogin }) => {
         </form>
         
         <div className="mt-6 text-center">
-          <p>
+          <p className="text-gray-400">
             Already have an account?{' '}
             <Link to="/login" className="text-blue-400 hover:underline">
               Login

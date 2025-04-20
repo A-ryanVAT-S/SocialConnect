@@ -1,10 +1,12 @@
 import pymysql
 import os
+import hashlib
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
-# Database configuration
+
+# DB config
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
     "port": int(os.getenv("DB_PORT")),
@@ -20,51 +22,54 @@ DB_CONFIG = {
 
 try:
     connection = pymysql.connect(**DB_CONFIG)
-
     with connection.cursor() as cursor:
-        # Check if 'group_name' column exists in 'tweet' table
-        check_column_query = """
-        SELECT COLUMN_NAME 
-        FROM INFORMATION_SCHEMA.COLUMNS 
-        WHERE TABLE_NAME = 'tweet' 
-        AND COLUMN_NAME = 'group_name' 
-        AND TABLE_SCHEMA = 'socialConnect';
-        """
-        cursor.execute(check_column_query)
-        column_result = cursor.fetchone()
+        print("✅ Connected to DB")
 
-        if not column_result:
-            alter_column_query = """
-            ALTER TABLE tweet 
-            ADD COLUMN group_name VARCHAR(50) NULL;
-            """
-            cursor.execute(alter_column_query)
-            print("Column 'group_name' added to 'tweet' table.")
-        else:
-            print("Column 'group_name' already exists.")
+        # Step 1: Get users like 'aryan%'
+        cursor.execute("""
+            SELECT username FROM users 
+            WHERE username LIKE 'aryan%';
+        """)
+        users = cursor.fetchall()
+        print(f"📋 Found {len(users)} users matching 'aryan%'")
 
-        # Try adding the foreign key constraint
-        try:
-            add_fk_query = """
-            ALTER TABLE tweet 
-            ADD CONSTRAINT fk_tweet_group 
-            FOREIGN KEY (group_name) REFERENCES group_(grpname) ON DELETE CASCADE;
-            """
-            cursor.execute(add_fk_query)
-            print("Foreign key constraint 'fk_tweet_group' added.")
-        except pymysql.err.InternalError as fk_error:
-            if "Duplicate" in str(fk_error) or "errno 1061" in str(fk_error):
-                print("Foreign key constraint 'fk_tweet_group' already exists.")
-            else:
-                raise fk_error
+        # Step 2: Delete users except 'aryan_main' and 'aryan_temp'
+        for user in users:
+            username = user['username']
+            if username not in ['aryan_main', 'aryan_temp']:
+                try:
+                    cursor.execute("DELETE FROM users WHERE username = %s;", (username,))
+                    print(f"🗑️ Deleted: {username}")
+                except pymysql.Error as e:
+                    print(f"⚠️ Cannot delete {username}: {e}")
+
+        # Step 3: Update all remaining users to have password = username
+        # (assuming you store plain text passwords, adjust if you use hashing)
+        cursor.execute("""
+            UPDATE users 
+            SET password = username
+        """)
+        affected_rows = cursor.rowcount
+        print(f"🔑 Updated {affected_rows} user passwords to match their usernames")
+
+        # Verify the changes
+        cursor.execute("""
+            SELECT username, password FROM users 
+            WHERE username LIKE 'aryan%'
+            ORDER BY username;
+        """)
+        remaining_users = cursor.fetchall()
+        print("\n🔍 Remaining aryan users after cleanup:")
+        for u in remaining_users:
+            pwd_status = "✅" if u['password'] == u['username'] else "❌"
+            print(f"   • {u['username']} (password match: {pwd_status})")
 
         connection.commit()
+        print("\n✅ Changes committed successfully")
 
-except pymysql.Error as e:
-    print(f"Database error: {e}")
-except Exception as e:
-    print(f"Unexpected error: {e}")
+except pymysql.Error as error:
+    print(f"❌ Database error: {error}")
 finally:
-    if 'connection' in locals() and connection.open:
+    if 'connection' in locals() and connection:
         connection.close()
         print("Connection closed.")

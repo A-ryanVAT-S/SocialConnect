@@ -54,7 +54,8 @@ def initialize_database():
                     lname VARCHAR(50),
                     photo LONGTEXT,
                     dateofbirth DATE,
-                    joined_from DATE
+                    joined_from DATE,
+                    password VARCHAR(255) NULL,
                 )
                 """)
                 

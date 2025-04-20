@@ -1,12 +1,20 @@
-// src/pages/Login.jsx
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { verifyUser } from '../utils/api';
+import { Link, useNavigate } from 'react-router-dom';
+import { loginUser } from '../utils/api';
 
 const Login = ({ onLogin }) => {
-  const [username, setUsername] = useState('');
+  const navigate = useNavigate();
+  const [formData, setFormData] = useState({
+    username: '',
+    password: '',
+  });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -14,14 +22,11 @@ const Login = ({ onLogin }) => {
     setLoading(true);
     
     try {
-      const verified = await verifyUser(username);
-      if (verified) {
-        onLogin({ username });
-      } else {
-        setError('User not found. Please check your username.');
-      }
+      const userData = await loginUser(formData.username, formData.password);
+      onLogin(userData);
+      navigate('/');
     } catch (err) {
-      setError('Login failed. Please try again.');
+      setError(err.message || 'Login failed. Please check your username and password.');
     } finally {
       setLoading(false);
     }
@@ -46,9 +51,25 @@ const Login = ({ onLogin }) => {
             <input
               type="text"
               id="username"
+              name="username"
               className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              value={formData.username}
+              onChange={handleChange}
+              required
+            />
+          </div>
+          
+          <div className="mb-6">
+            <label htmlFor="password" className="block mb-2 text-sm font-medium">
+              Password
+            </label>
+            <input
+              type="password"
+              id="password"
+              name="password"
+              className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
+              value={formData.password}
+              onChange={handleChange}
               required
             />
           </div>
@@ -63,7 +84,7 @@ const Login = ({ onLogin }) => {
         </form>
         
         <div className="mt-6 text-center">
-          <p>
+          <p className="text-gray-400">
             Don't have an account?{' '}
             <Link to="/register" className="text-blue-400 hover:underline">
               Register

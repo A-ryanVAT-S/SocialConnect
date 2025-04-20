@@ -54,6 +54,13 @@ const GroupDetail = ({ currentUser }) => {
         // Check if current user is admin
         const adminStatus = groupData.admin === currentUser.username;
         setIsAdmin(adminStatus);
+        
+        // Debug log to verify admin status
+        console.log('Admin check:', {
+          groupAdmin: groupData.admin,
+          currentUsername: currentUser.username,
+          isAdmin: adminStatus
+        });
 
         // Fetch members
         const membersData = await fetchGroupMembers(groupName);
@@ -335,6 +342,9 @@ const GroupDetail = ({ currentUser }) => {
             </div>
             <p className="text-gray-300">{group.bio || 'No description available'}</p>
             <p className="text-sm text-gray-400 mt-2">Admin: {group.admin}</p>
+            {isAdmin && (
+              <p className="text-sm text-green-400 mt-1">You are the admin of this group</p>
+            )}
           </div>
         </div>
         {requestError && (
