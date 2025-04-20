@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
 # Database Configuration for Aiven MySQL
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
@@ -18,19 +19,10 @@ DB_CONFIG = {
     "write_timeout": 10,
     "cursorclass": pymysql.cursors.DictCursor
 }
-def initialize_database():
-    """Initialize database by creating it if it doesn't exist"""
+
+def reset_database():
+    """Reset database by dropping all tables and recreating them with nullable columns"""
     try:
-        # Connect to server first
-        connection = pymysql.connect(**DB_CONFIG)
-        try:
-            with connection.cursor() as cursor:
-                # Create database if it doesn't exist
-                cursor.execute("CREATE DATABASE IF NOT EXISTS socialConnect")
-            connection.commit()
-        finally:
-            connection.close()
-        
         # Connect to socialConnect database
         config = DB_CONFIG.copy()
         config["db"] = "socialConnect"
@@ -38,35 +30,60 @@ def initialize_database():
         
         try:
             with connection.cursor() as cursor:
-                # Use the socialConnect database
-                cursor.execute("USE socialConnect")
+                # Disable foreign key checks to allow dropping tables with foreign key constraints
+                cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
                 
-                # Create tables
+                # Drop all existing tables in reverse order of dependencies
+                tables = [
+                    "follow_requests",
+                    "group_requests",
+                    "group_chat",
+                    "chat",
+                    "group_members",
+                    "group_",
+                    "vote",
+                    "poll_option",
+                    "poll",
+                    "follows",
+                    "comment_",
+                    "like_",
+                    "tweet",
+                    "users"
+                ]
+                
+                for table in tables:
+                    cursor.execute(f"DROP TABLE IF EXISTS {table}")
+                    print(f"Dropped table: {table}")
+                
+                # Re-enable foreign key checks
+                cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
+                
+                # Create tables with nullable fields (except primary keys and essential relations)
                 cursor.execute("""
                 -- Users table
                 CREATE TABLE IF NOT EXISTS users (
-                    username VARCHAR(50) PRIMARY KEY,
-                    location VARCHAR(100),
-                    bio TEXT,
+                    username VARCHAR(50) PRIMARY KEY NOT NULL,
+                    location VARCHAR(100) NULL,
+                    bio TEXT NULL,
                     mailid VARCHAR(100) UNIQUE NOT NULL,
-                    website VARCHAR(200),
-                    fname VARCHAR(50),
-                    lname VARCHAR(50),
-                    photo LONGTEXT,
-                    dateofbirth DATE,
-                    joined_from DATE,
-                    password VARCHAR(255) NULL,
+                    website VARCHAR(200) NULL,
+                    fname VARCHAR(50) NULL,
+                    lname VARCHAR(50) NULL,
+                    photo LONGTEXT NULL,
+                    dateofbirth DATE NULL,
+                    joined_from DATE NULL,
+                    password VARCHAR(255) NULL
                 )
                 """)
                 
                 cursor.execute("""
                 -- Tweet table
                 CREATE TABLE IF NOT EXISTS tweet (
-                    tweetid INT PRIMARY KEY,
-                    content_ TEXT,
-                    photo LONGTEXT,
+                    tweetid INT PRIMARY KEY NOT NULL,
+                    content_ TEXT NULL,
+                    photo LONGTEXT NULL,
                     time_ TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    author VARCHAR(50),
+                    author VARCHAR(50) NOT NULL,
                     FOREIGN KEY (author) REFERENCES users(username) ON DELETE CASCADE
                 )
                 """)
@@ -74,8 +91,8 @@ def initialize_database():
                 cursor.execute("""
                 -- Like table
                 CREATE TABLE IF NOT EXISTS like_ (
-                    username VARCHAR(50),
-                    tweetid INT,
+                    username VARCHAR(50) NOT NULL,
+                    tweetid INT NOT NULL,
                     PRIMARY KEY (username, tweetid),
                     FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
                     FOREIGN KEY (tweetid) REFERENCES tweet(tweetid) ON DELETE CASCADE
@@ -85,11 +102,11 @@ def initialize_database():
                 cursor.execute("""
                 -- Comment table
                 CREATE TABLE IF NOT EXISTS comment_ (
-                    _id INT AUTO_INCREMENT PRIMARY KEY,
+                    _id INT AUTO_INCREMENT PRIMARY KEY NOT NULL,
                     time_ TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    tweetid INT,
-                    username VARCHAR(50),
-                    content_ TEXT,
+                    tweetid INT NOT NULL,
+                    username VARCHAR(50) NOT NULL,
+                    content_ TEXT NULL,
                     FOREIGN KEY (tweetid) REFERENCES tweet(tweetid) ON DELETE CASCADE,
                     FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE
                 )
@@ -98,8 +115,8 @@ def initialize_database():
                 cursor.execute("""
                 -- Follow table
                 CREATE TABLE IF NOT EXISTS follows (
-                    follower VARCHAR(50),
-                    follows VARCHAR(50),
+                    follower VARCHAR(50) NOT NULL,
+                    follows VARCHAR(50) NOT NULL,
                     PRIMARY KEY (follower, follows),
                     FOREIGN KEY (follower) REFERENCES users(username) ON DELETE CASCADE,
                     FOREIGN KEY (follows) REFERENCES users(username) ON DELETE CASCADE
@@ -109,9 +126,9 @@ def initialize_database():
                 cursor.execute("""
                 -- Poll table
                 CREATE TABLE IF NOT EXISTS poll (
-                    id_ INT PRIMARY KEY,
-                    content_ TEXT,
-                    poll_by VARCHAR(50),
+                    id_ INT PRIMARY KEY NOT NULL,
+                    content_ TEXT NULL,
+                    poll_by VARCHAR(50) NOT NULL,
                     time_ TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (poll_by) REFERENCES users(username) ON DELETE CASCADE
                 )
@@ -120,8 +137,8 @@ def initialize_database():
                 cursor.execute("""
                 -- Poll option table
                 CREATE TABLE IF NOT EXISTS poll_option (
-                    poll_id INT,
-                    option_ VARCHAR(200),
+                    poll_id INT NOT NULL,
+                    option_ VARCHAR(200) NOT NULL,
                     PRIMARY KEY (poll_id, option_),
                     FOREIGN KEY (poll_id) REFERENCES poll(id_) ON DELETE CASCADE
                 )
@@ -130,9 +147,9 @@ def initialize_database():
                 cursor.execute("""
                 -- Vote table
                 CREATE TABLE IF NOT EXISTS vote (
-                    username VARCHAR(50),
-                    poll_id INT,
-                    poll_option_ VARCHAR(200), 
+                    username VARCHAR(50) NOT NULL,
+                    poll_id INT NOT NULL,
+                    poll_option_ VARCHAR(200) NULL, 
                     PRIMARY KEY (username, poll_id),
                     FOREIGN KEY (username) REFERENCES users(username) ON DELETE CASCADE,
                     FOREIGN KEY (poll_id) REFERENCES poll(id_) ON DELETE CASCADE
@@ -142,10 +159,10 @@ def initialize_database():
                 cursor.execute("""
                 -- Group table
                 CREATE TABLE IF NOT EXISTS group_ (
-                    grpname VARCHAR(50) PRIMARY KEY,
-                    admin VARCHAR(50),
-                    photo LONGTEXT,
-                    bio TEXT,
+                    grpname VARCHAR(50) PRIMARY KEY NOT NULL,
+                    admin VARCHAR(50) NOT NULL,
+                    photo LONGTEXT NULL,
+                    bio TEXT NULL,
                     FOREIGN KEY (admin) REFERENCES users(username) ON DELETE CASCADE
                 )
                 """)
@@ -153,8 +170,8 @@ def initialize_database():
                 cursor.execute("""
                 -- Group members table
                 CREATE TABLE IF NOT EXISTS group_members (
-                    grp_name VARCHAR(50),
-                    grpmem VARCHAR(50),
+                    grp_name VARCHAR(50) NOT NULL,
+                    grpmem VARCHAR(50) NOT NULL,
                     PRIMARY KEY (grp_name, grpmem),
                     FOREIGN KEY (grp_name) REFERENCES group_(grpname) ON DELETE CASCADE,
                     FOREIGN KEY (grpmem) REFERENCES users(username) ON DELETE CASCADE
@@ -164,10 +181,10 @@ def initialize_database():
                 cursor.execute("""
                 -- Chat table
                 CREATE TABLE IF NOT EXISTS chat (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    sender VARCHAR(50),
-                    receiver VARCHAR(50),
-                    msg TEXT,
+                    id INT AUTO_INCREMENT PRIMARY KEY NOT NULL,
+                    sender VARCHAR(50) NOT NULL,
+                    receiver VARCHAR(50) NOT NULL,
+                    msg TEXT NULL,
                     time_ TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (sender) REFERENCES users(username) ON DELETE CASCADE,
                     FOREIGN KEY (receiver) REFERENCES users(username) ON DELETE CASCADE
@@ -177,10 +194,10 @@ def initialize_database():
                 cursor.execute("""
                 -- Group chat table
                 CREATE TABLE IF NOT EXISTS group_chat (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    grp_name VARCHAR(50),
-                    sender VARCHAR(50),
-                    message TEXT,
+                    id INT AUTO_INCREMENT PRIMARY KEY NOT NULL,
+                    grp_name VARCHAR(50) NOT NULL,
+                    sender VARCHAR(50) NOT NULL,
+                    message TEXT NULL,
                     time_ TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (grp_name) REFERENCES group_(grpname) ON DELETE CASCADE,
                     FOREIGN KEY (sender) REFERENCES users(username) ON DELETE CASCADE
@@ -190,9 +207,9 @@ def initialize_database():
                 cursor.execute("""
                 -- Group membership requests table
                 CREATE TABLE IF NOT EXISTS group_requests (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    grp_name VARCHAR(50),
-                    username VARCHAR(50),
+                    id INT AUTO_INCREMENT PRIMARY KEY NOT NULL,
+                    grp_name VARCHAR(50) NOT NULL,
+                    username VARCHAR(50) NOT NULL,
                     request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
                     FOREIGN KEY (grp_name) REFERENCES group_(grpname) ON DELETE CASCADE,
@@ -204,9 +221,9 @@ def initialize_database():
                 cursor.execute("""
                 -- Follow requests table
                 CREATE TABLE IF NOT EXISTS follow_requests (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    requester VARCHAR(50),
-                    target VARCHAR(50),
+                    id INT AUTO_INCREMENT PRIMARY KEY NOT NULL,
+                    requester VARCHAR(50) NOT NULL,
+                    target VARCHAR(50) NOT NULL,
                     request_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
                     FOREIGN KEY (requester) REFERENCES users(username) ON DELETE CASCADE,
@@ -216,14 +233,14 @@ def initialize_database():
                 """)
             
             connection.commit()
-            print("Database and tables initialized successfully!")
+            print("Database tables dropped and recreated successfully!")
             
         finally:
             connection.close()
             
     except pymysql.MySQLError as err:
-        print(f"Database initialization error: {err}")
+        print(f"Database reset error: {err}")
         raise
 
 if __name__ == "__main__":
-    initialize_database()
+    reset_database()

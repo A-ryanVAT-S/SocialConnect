@@ -1,12 +1,12 @@
 import pymysql
 import os
-import hashlib
+from pymysql.constants import CLIENT
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# DB config
+# Database Configuration for Aiven MySQL
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
     "port": int(os.getenv("DB_PORT")),
@@ -20,56 +20,51 @@ DB_CONFIG = {
     "cursorclass": pymysql.cursors.DictCursor
 }
 
-try:
-    connection = pymysql.connect(**DB_CONFIG)
-    with connection.cursor() as cursor:
-        print("✅ Connected to DB")
+def add_users_to_lab_group():
+    """Add all present users to the 'Lab' group"""
+    try:
+        # Connect to socialConnect database
+        config = DB_CONFIG.copy()
+        config["db"] = "socialConnect"
+        connection = pymysql.connect(**config)
+        
+        try:
+            with connection.cursor() as cursor:
+                # First, check if the Lab group exists
+                cursor.execute("SELECT grpname FROM group_ WHERE grpname = 'Lab'")
+                group_result = cursor.fetchone()
+                
+                if not group_result:
+                    # Create the Lab group with the first user as admin
+                    cursor.execute("SELECT username FROM users LIMIT 1")
+                    admin_user = cursor.fetchone()
+                    
+                    if admin_user:
+                        cursor.execute("""
+                            INSERT INTO group_ (grpname, admin, bio)
+                            VALUES ('Lab', %s, 'Laboratory group for research and collaboration')
+                        """, (admin_user['username'],))
+                        print("Created Lab group with admin:", admin_user['username'])
+                    else:
+                        print("Error: No users exist to be admin of the Lab group")
+                        return
+                
+                # Add all users to the Lab group
+                cursor.execute("""
+                    INSERT IGNORE INTO group_members (grp_name, grpmem)
+                    SELECT 'Lab', username FROM users
+                """)
+                
+                affected_rows = cursor.rowcount
+                connection.commit()
+                print(f"Successfully added {affected_rows} users to the Lab group!")
+        
+        finally:
+            connection.close()
+            
+    except pymysql.MySQLError as err:
+        print(f"Error adding users to Lab group: {err}")
+        raise
 
-        # Step 1: Get users like 'aryan%'
-        cursor.execute("""
-            SELECT username FROM users 
-            WHERE username LIKE 'aryan%';
-        """)
-        users = cursor.fetchall()
-        print(f"📋 Found {len(users)} users matching 'aryan%'")
-
-        # Step 2: Delete users except 'aryan_main' and 'aryan_temp'
-        for user in users:
-            username = user['username']
-            if username not in ['aryan_main', 'aryan_temp']:
-                try:
-                    cursor.execute("DELETE FROM users WHERE username = %s;", (username,))
-                    print(f"🗑️ Deleted: {username}")
-                except pymysql.Error as e:
-                    print(f"⚠️ Cannot delete {username}: {e}")
-
-        # Step 3: Update all remaining users to have password = username
-        # (assuming you store plain text passwords, adjust if you use hashing)
-        cursor.execute("""
-            UPDATE users 
-            SET password = username
-        """)
-        affected_rows = cursor.rowcount
-        print(f"🔑 Updated {affected_rows} user passwords to match their usernames")
-
-        # Verify the changes
-        cursor.execute("""
-            SELECT username, password FROM users 
-            WHERE username LIKE 'aryan%'
-            ORDER BY username;
-        """)
-        remaining_users = cursor.fetchall()
-        print("\n🔍 Remaining aryan users after cleanup:")
-        for u in remaining_users:
-            pwd_status = "✅" if u['password'] == u['username'] else "❌"
-            print(f"   • {u['username']} (password match: {pwd_status})")
-
-        connection.commit()
-        print("\n✅ Changes committed successfully")
-
-except pymysql.Error as error:
-    print(f"❌ Database error: {error}")
-finally:
-    if 'connection' in locals() and connection:
-        connection.close()
-        print("Connection closed.")
+if __name__ == "__main__":
+    add_users_to_lab_group()

@@ -14,6 +14,7 @@ import {
   fetchFollowRequests
 } from '../utils/api';
 import RequestItem from '../components/RequestItem';
+import defaultUserImage from '../assets/default-user.png';
 
 const GroupDetail = ({ currentUser }) => {
   const { groupName } = useParams();
@@ -198,6 +199,88 @@ const GroupDetail = ({ currentUser }) => {
     }
   }, [chatMessages, activeTab]);
 
+  // Get photo URL function - handles various photo formats
+  const getPhotoUrl = (item) => {
+    if (!item) return null;
+
+    let photoData = null;
+
+    // Check where the image might be stored
+    const possibleKeys = [
+      "photo",
+      "userphoto",
+      "avatar",
+      "profile_image",
+      "profileImage",
+      "image",
+      "user_photo",
+    ];
+
+    for (const key of possibleKeys) {
+      if (
+        item[key] &&
+        typeof item[key] === "string" &&
+        item[key].length > 100
+      ) {
+        photoData = item[key];
+        break;
+      }
+    }
+
+    if (!photoData) return null;
+
+    // If it's already a full data URI, return as is
+    if (photoData.startsWith("data:image")) {
+      return photoData;
+    }
+
+    // Try to parse if it's accidentally stringified JSON
+    try {
+      const parsed = JSON.parse(photoData);
+      if (typeof parsed === "string") photoData = parsed;
+    } catch (e) {
+      // Not JSON, continue
+    }
+
+    // Clean quotation marks
+    photoData = photoData.replace(/^["']|["']$/g, "");
+
+    // Check if it's base64 or hex
+    const isLikelyHex =
+      /^[0-9a-fA-F]+$/.test(photoData.replace(/\s/g, "")) &&
+      photoData.length % 2 === 0;
+
+    if (isLikelyHex) {
+      // Convert hex to base64
+      try {
+        const hexToBase64 = (hex) => {
+          const binary = hex
+            .match(/.{1,2}/g)
+            .map((byte) => String.fromCharCode(parseInt(byte, 16)))
+            .join("");
+          return btoa(binary);
+        };
+
+        const base64 = hexToBase64(photoData.replace(/\s/g, ""));
+        return `data:image/jpeg;base64,${base64}`;
+      } catch (e) {
+        console.error("Failed to convert hex to base64:", e);
+        return null;
+      }
+    }
+
+    // If it's already base64
+    return `data:image/jpeg;base64,${photoData}`;
+  };
+
+  const handleImageError = (e) => {
+    e.target.onerror = null;
+    e.target.style.display = 'none';
+    if (e.target.nextSibling) {
+      e.target.nextSibling.style.display = 'flex';
+    }
+  };
+
   // Handle join request
   const handleJoinRequest = async () => {
     try {
@@ -305,23 +388,20 @@ const GroupDetail = ({ currentUser }) => {
     <div className="p-6">
       <div className="bg-gray-800 rounded-lg p-6 mb-6">
         <div className="flex items-start space-x-4">
-          {group.photo ? (
-            <img
-              src={`data:image/jpeg;base64,${group.photo}`}
-              alt={group.grpname}
-              className="w-24 h-24 rounded-lg object-cover"
-              onError={(e) => {
-                e.target.onerror = null;
-                e.target.src = ''; // Fallback to div if image fails
-                e.target.style.display = 'none';
-                e.target.nextSibling.style.display = 'flex';
-              }}
-            />
-          ) : (
-            <div className="w-24 h-24 rounded-lg bg-gray-700 flex items-center justify-center text-3xl font-bold">
-              {group.grpname?.charAt(0)?.toUpperCase() || 'G'}
-            </div>
-          )}
+          <div className="w-24 h-24 rounded-lg overflow-hidden">
+            {getPhotoUrl(group) ? (
+              <img
+                src={getPhotoUrl(group)}
+                alt={group.grpname}
+                className="w-24 h-24 rounded-lg object-cover"
+                onError={handleImageError}
+              />
+            ) : (
+              <div className="w-24 h-24 rounded-lg bg-gray-700 flex items-center justify-center text-3xl font-bold">
+                {group.grpname?.charAt(0)?.toUpperCase() || 'G'}
+              </div>
+            )}
+          </div>
           <div className="flex-1">
             <div className="flex justify-between items-center mb-4">
               <h1 className="text-2xl font-bold">{group.grpname}</h1>
@@ -420,17 +500,20 @@ const GroupDetail = ({ currentUser }) => {
               {posts.map(post => (
                 <div key={post.tweetid || post.id} className="bg-gray-800 p-4 rounded-lg mb-4">
                   <div className="flex items-center mb-2">
-                    {post.userphoto ? (
-                      <img
-                        src={`data:image/jpeg;base64,${post.userphoto}`}
-                        alt={post.username}
-                        className="w-10 h-10 rounded-full object-cover"
-                      />
-                    ) : (
-                      <div className="h-10 w-10 rounded-full bg-blue-500 flex items-center justify-center">
-                        {post.username?.charAt(0)?.toUpperCase() || 'U'}
-                      </div>
-                    )}
+                    <div className="w-10 h-10 rounded-full overflow-hidden">
+                      {getPhotoUrl(post) ? (
+                        <img
+                          src={getPhotoUrl(post)}
+                          alt={post.username}
+                          className="w-10 h-10 rounded-full object-cover"
+                          onError={handleImageError}
+                        />
+                      ) : (
+                        <div className="h-10 w-10 rounded-full bg-blue-500 flex items-center justify-center">
+                          {post.username?.charAt(0)?.toUpperCase() || 'U'}
+                        </div>
+                      )}
+                    </div>
                     <div className="ml-3">
                       <Link to={`/profile/${post.username}`} className="font-semibold hover:underline">
                         {post.username}
@@ -443,9 +526,13 @@ const GroupDetail = ({ currentUser }) => {
                   <p className="text-gray-200">{post.content_ || post.content}</p>
                   {post.photo && (
                     <img
-                      src={`data:image/jpeg;base64,${post.photo}`}
+                      src={getPhotoUrl(post) || `data:image/jpeg;base64,${post.photo}`}
                       alt="Post content"
                       className="mt-3 rounded-lg max-h-96 object-contain w-full"
+                      onError={(e) => {
+                        e.target.onerror = null;
+                        e.target.style.display = 'none';
+                      }}
                     />
                   )}
                 </div>
@@ -514,8 +601,19 @@ const GroupDetail = ({ currentUser }) => {
           {members.map(member => (
             <div key={member.username} className="bg-gray-800 p-4 rounded-lg mb-2 flex justify-between items-center">
               <div className="flex items-center">
-                <div className="h-10 w-10 rounded-full bg-blue-500 flex items-center justify-center">
-                  {member.username?.charAt(0)?.toUpperCase() || 'U'}
+                <div className="h-10 w-10 rounded-full overflow-hidden">
+                  {getPhotoUrl(member) ? (
+                    <img
+                      src={getPhotoUrl(member)}
+                      alt={member.username}
+                      className="w-10 h-10 rounded-full object-cover"
+                      onError={handleImageError}
+                    />
+                  ) : (
+                    <div className="h-10 w-10 rounded-full bg-blue-500 flex items-center justify-center">
+                      {member.username?.charAt(0)?.toUpperCase() || 'U'}
+                    </div>
+                  )}
                 </div>
                 <div className="ml-3">
                   <Link to={`/profile/${member.username}`} className="font-semibold hover:underline">
