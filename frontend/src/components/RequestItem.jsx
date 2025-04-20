@@ -6,34 +6,51 @@ const RequestItem = ({ request, type, onRequestUpdate, currentUser }) => {
   console.log('Request Item:', request);
   console.log('Request Status:', request?.status);
   console.log('Current User:', currentUser?.username);
-  console.log('Request Target:', request?.target);
+  console.log('Type:', type);
   
-  // For follow requests, assume the current user's profile is the target
-  // since we're fetching requests for the current user
-  const isFollowTarget = type === 'follow' && currentUser;
+  // For follow requests, check if current user is the target of the follow request
+  const isFollowTarget = type === 'follow' && request?.target === currentUser?.username;
   
   // For group requests, check if current user is admin
   const isGroupAdmin = type === 'group' && request?.admin === currentUser?.username;
   
-  // Can approve if admin for group requests or target for follow requests AND status is pending
-  // For follow requests, we'll assume pending status since they wouldn't be fetched otherwise
-  const canApprove = (type === 'group' && isGroupAdmin && request?.status?.toLowerCase() === 'pending') || 
-                     (type === 'follow' && isFollowTarget);
+  // Can approve/reject if:
+  // - For group requests: user is admin AND status is pending
+  // - For follow requests: user is target of the request AND status is pending
+  const canApprove = (type === 'group' && isGroupAdmin && request?.status === 'pending') || 
+                     (type === 'follow' && isFollowTarget && request?.status === 'pending');
 
-  const displayName = request?.username || request?.requester || 'Unknown User';
-  const firstChar = displayName.charAt(0).toUpperCase();
+  // For group requests, display username
+  // For follow requests, display requester
+  const displayName = type === 'group' ? request?.username : request?.requester;
+  const firstChar = displayName ? displayName.charAt(0).toUpperCase() : '?';
 
   const handleAction = async (action) => {
     try {
+      console.log(`Handling ${action} for request ${request.id}`);
+      
       if (type === 'group') {
         await approveGroupRequest(request.id, action);
       } else {
         await approveFollowRequest(request.id, action);
       }
+      
       // Call the parent function to refresh the requests list
-      onRequestUpdate();
+      if (onRequestUpdate) {
+        onRequestUpdate();
+      }
     } catch (error) {
       console.error(`Failed to ${action} request:`, error);
+    }
+  };
+
+  // Format date properly
+  const formatDate = (date) => {
+    if (!date) return '';
+    try {
+      return new Date(date).toLocaleString();
+    } catch (e) {
+      return date;
     }
   };
 
@@ -45,15 +62,15 @@ const RequestItem = ({ request, type, onRequestUpdate, currentUser }) => {
         </div>
         <div className="ml-3">
           <p className="font-semibold text-white">
-            {displayName}
+            {displayName || 'Unknown User'}
           </p>
           <p className="text-sm text-gray-400">
             {type === 'group'
               ? `Wants to join ${request?.grp_name || 'group'}`
-              : `Wants to follow you`}
+              : `Wants to follow ${request?.target || 'you'}`}
           </p>
           <p className="text-xs text-gray-500">
-            {request?.request_time ? new Date(request.request_time).toLocaleString() : ''}
+            {formatDate(request?.request_time)}
           </p>
         </div>
       </div>
@@ -74,7 +91,11 @@ const RequestItem = ({ request, type, onRequestUpdate, currentUser }) => {
           </button>
         </div>
       ) : (
-        <span className="px-3 py-1 bg-gray-700 rounded text-sm text-gray-300">
+        <span className={`px-3 py-1 rounded text-sm ${
+          request?.status === 'approved' ? 'bg-green-700 text-green-100' :
+          request?.status === 'rejected' ? 'bg-red-700 text-red-100' :
+          'bg-gray-700 text-gray-300'
+        }`}>
           {request?.status ? request.status.charAt(0).toUpperCase() + request.status.slice(1) : 'Unknown Status'}
         </span>
       )}

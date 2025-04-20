@@ -10,7 +10,8 @@ import {
   fetchGroupJoinRequests,
   requestJoinGroup,
   removeGroupMember,
-  approveGroupRequest
+  joinGroup,
+  fetchFollowRequests
 } from '../utils/api';
 import RequestItem from '../components/RequestItem';
 
@@ -34,11 +35,19 @@ const GroupDetail = ({ currentUser }) => {
   const [userStatus, setUserStatus] = useState('not-member'); // can be 'not-member', 'pending', 'member'
   const [requestError, setRequestError] = useState(null);
 
+  // Follow requests state
+  const [followRequests, setFollowRequests] = useState([]);
+  const [followError, setFollowError] = useState(null);
+
   // Load group details
   useEffect(() => {
     const loadGroupData = async () => {
       try {
         setLoading(true);
+        setRequestError(null);
+        setFollowError(null);
+
+        // Fetch group details
         const groupData = await fetchGroupDetails(groupName, currentUser.username);
         setGroup(groupData);
 
@@ -46,6 +55,7 @@ const GroupDetail = ({ currentUser }) => {
         const adminStatus = groupData.admin === currentUser.username;
         setIsAdmin(adminStatus);
 
+        // Fetch members
         const membersData = await fetchGroupMembers(groupName);
         setMembers(membersData);
 
@@ -54,47 +64,66 @@ const GroupDetail = ({ currentUser }) => {
 
         if (isMember) {
           setUserStatus('member');
-          // Load posts
-          const postsData = await fetchGroupPosts(groupName);
-          setPosts(postsData);
+          
+          // Load posts for members
+          try {
+            const postsData = await fetchGroupPosts(groupName);
+            setPosts(postsData || []); // Ensure it's always an array
+          } catch (error) {
+            console.error('Error fetching posts:', error);
+            setPosts([]);
+          }
 
-          // Load chat
-          const chatData = await fetchGroupChat(groupName);
-          setChatMessages(chatData);
+          // Load chat for members
+          try {
+            const chatData = await fetchGroupChat(groupName);
+            setChatMessages(chatData || []); // Ensure it's always an array
+          } catch (error) {
+            console.error('Error fetching chat:', error);
+            setChatMessages([]);
+          }
         } else {
           // For non-members, check if they have a pending request
           try {
             const requestsData = await fetchGroupJoinRequests(groupName);
             
-            // Non-admin users can still check if they have their own pending request
             const hasPendingRequest = requestsData.some(
               request => request.username === currentUser.username && request.status === 'pending'
             );
 
             setUserStatus(hasPendingRequest ? 'pending' : 'not-member');
-
-            // If user is admin, set all join requests
-            if (adminStatus) {
-              setJoinRequests(requestsData);
-            }
           } catch (error) {
-            console.log('Error fetching join requests:', error);
-            // If error, they're probably not authorized to view requests
+            console.log('Error checking pending request:', error);
             setUserStatus('not-member');
           }
         }
 
-        // If user is admin, always fetch join requests regardless of member status
+        // If user is admin, fetch all join requests and follow requests
         if (adminStatus) {
           try {
             const requestsData = await fetchGroupJoinRequests(groupName);
-            setJoinRequests(requestsData);
+            console.log('Fetched join requests:', requestsData); // Debug log
+            setJoinRequests(requestsData || []); // Ensure it's always an array
           } catch (error) {
-            console.log('Admin error fetching join requests:', error);
+            console.error('Admin error fetching join requests:', error);
+            setJoinRequests([]);
+          }
+
+          // Fetch follow requests for admin
+          try {
+            const username = typeof currentUser === 'object' ? currentUser.username : currentUser;
+            const followData = await fetchFollowRequests(username);
+            console.log('Fetched follow requests:', followData);
+            setFollowRequests(followData || []);
+          } catch (error) {
+            console.error('Error fetching follow requests:', error);
+            setFollowError('Failed to load follow requests');
+            setFollowRequests([]);
           }
         }
       } catch (error) {
         console.error('Error loading group data:', error);
+        setRequestError('Failed to load group details');
       } finally {
         setLoading(false);
       }
@@ -103,37 +132,57 @@ const GroupDetail = ({ currentUser }) => {
     loadGroupData();
   }, [groupName, currentUser.username]);
 
-  // Set up periodic refresh for chat and requests
+  // Set up periodic refresh for chat, join requests, and follow requests
   useEffect(() => {
-    // Set up interval to refresh chat
-    const chatInterval = setInterval(() => {
-      if (userStatus === 'member') {
+    // Set up interval to refresh chat for members
+    let chatInterval;
+    if (userStatus === 'member') {
+      chatInterval = setInterval(() => {
         fetchGroupChat(groupName).then(data => {
           setChatMessages(data);
         }).catch(error => {
           console.log('Error refreshing chat:', error);
         });
-      }
-    }, 5000);
+      }, 5000);
+    }
 
     // Set up interval to refresh join requests if admin
-    const requestInterval = setInterval(() => {
-      if (isAdmin) {
+    let requestInterval;
+    if (isAdmin) {
+      requestInterval = setInterval(() => {
         fetchGroupJoinRequests(groupName)
           .then(requestsData => {
+            console.log('Refreshed join requests:', requestsData); // Debug log
             setJoinRequests(requestsData);
           })
           .catch(error => {
             console.log('Error refreshing requests:', error);
           });
-      }
-    }, 10000);
+      }, 10000);
+    }
+
+    // Set up interval to refresh follow requests if admin
+    let followInterval;
+    if (isAdmin) {
+      followInterval = setInterval(() => {
+        const username = typeof currentUser === 'object' ? currentUser.username : currentUser;
+        fetchFollowRequests(username)
+          .then(followData => {
+            console.log('Refreshed follow requests:', followData);
+            setFollowRequests(followData);
+          })
+          .catch(error => {
+            console.log('Error refreshing follow requests:', error);
+          });
+      }, 10000);
+    }
 
     return () => {
-      clearInterval(chatInterval);
-      clearInterval(requestInterval);
+      if (chatInterval) clearInterval(chatInterval);
+      if (requestInterval) clearInterval(requestInterval);
+      if (followInterval) clearInterval(followInterval);
     };
-  }, [groupName, isAdmin, userStatus]);
+  }, [groupName, isAdmin, userStatus, currentUser]);
 
   // Scroll to bottom of chat when new messages arrive
   useEffect(() => {
@@ -147,10 +196,18 @@ const GroupDetail = ({ currentUser }) => {
     try {
       setRequestError(null);
       const response = await requestJoinGroup(groupName, currentUser.username);
-      if (response.status === 'success') {
-        setUserStatus('pending');
+      
+      // If group is public and join is immediate, update status directly
+      if (response.status === 'success' && response.message && response.message.includes('joined successfully')) {
+        setUserStatus('member');
+        // Refresh members and posts for new member
+        const membersData = await fetchGroupMembers(groupName);
+        setMembers(membersData);
+        const postsData = await fetchGroupPosts(groupName);
+        setPosts(postsData);
       } else {
-        setRequestError(response.message || 'Request failed');
+        // Otherwise, status is pending
+        setUserStatus('pending');
       }
     } catch (error) {
       console.error('Error sending join request:', error);
@@ -166,7 +223,7 @@ const GroupDetail = ({ currentUser }) => {
     try {
       await createPost(currentUser.username, newPost, groupName);
       const updatedPosts = await fetchGroupPosts(groupName);
-      setPosts(updatedPosts);
+      setPosts(updatedPosts || []);
       setNewPost('');
     } catch (error) {
       console.error('Error creating post:', error);
@@ -188,28 +245,30 @@ const GroupDetail = ({ currentUser }) => {
     }
   };
 
-  // Refresh join requests
+  // Refresh join requests and members
   const refreshRequests = async () => {
     try {
       const requestsData = await fetchGroupJoinRequests(groupName);
+      console.log('Refreshed requests after action:', requestsData); // Debug log
       setJoinRequests(requestsData);
       
-      // Also refresh members after a request is processed
+      // Also refresh members
       const membersData = await fetchGroupMembers(groupName);
       setMembers(membersData);
-      
-      // Update the user's status if their request was processed
-      const isMember = membersData.some(member => member.username === currentUser.username);
-      if (isMember) {
-        setUserStatus('member');
-      } else {
-        const hasPendingRequest = requestsData.some(
-          request => request.username === currentUser.username && request.status === 'pending'
-        );
-        setUserStatus(hasPendingRequest ? 'pending' : 'not-member');
-      }
     } catch (error) {
       console.error('Error refreshing requests:', error);
+    }
+  };
+
+  // Refresh follow requests
+  const refreshFollowRequests = async () => {
+    try {
+      const username = typeof currentUser === 'object' ? currentUser.username : currentUser;
+      const followData = await fetchFollowRequests(username);
+      console.log('Refreshed follow requests after action:', followData);
+      setFollowRequests(followData);
+    } catch (error) {
+      console.error('Error refreshing follow requests:', error);
     }
   };
 
@@ -238,25 +297,46 @@ const GroupDetail = ({ currentUser }) => {
   return (
     <div className="p-6">
       <div className="bg-gray-800 rounded-lg p-6 mb-6">
-        <div className="flex justify-between items-center mb-4">
-          <h1 className="text-2xl font-bold">{group.grpname}</h1>
-          {userStatus === 'not-member' && (
-            <button
-              onClick={handleJoinRequest}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg"
-            >
-              Request to Join
-            </button>
+        <div className="flex items-start space-x-4">
+          {group.photo ? (
+            <img
+              src={`data:image/jpeg;base64,${group.photo}`}
+              alt={group.grpname}
+              className="w-24 h-24 rounded-lg object-cover"
+              onError={(e) => {
+                e.target.onerror = null;
+                e.target.src = ''; // Fallback to div if image fails
+                e.target.style.display = 'none';
+                e.target.nextSibling.style.display = 'flex';
+              }}
+            />
+          ) : (
+            <div className="w-24 h-24 rounded-lg bg-gray-700 flex items-center justify-center text-3xl font-bold">
+              {group.grpname?.charAt(0)?.toUpperCase() || 'G'}
+            </div>
           )}
-          {userStatus === 'pending' && (
-            <span className="px-4 py-2 bg-yellow-600 rounded-lg">Request Pending</span>
-          )}
-          {userStatus === 'member' && (
-            <span className="px-4 py-2 bg-green-600 rounded-lg">Member</span>
-          )}
+          <div className="flex-1">
+            <div className="flex justify-between items-center mb-4">
+              <h1 className="text-2xl font-bold">{group.grpname}</h1>
+              {userStatus === 'not-member' && (
+                <button
+                  onClick={handleJoinRequest}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg"
+                >
+                  Request to Join
+                </button>
+              )}
+              {userStatus === 'pending' && (
+                <span className="px-4 py-2 bg-yellow-600 rounded-lg">Request Pending</span>
+              )}
+              {userStatus === 'member' && (
+                <span className="px-4 py-2 bg-green-600 rounded-lg">Member</span>
+              )}
+            </div>
+            <p className="text-gray-300">{group.bio || 'No description available'}</p>
+            <p className="text-sm text-gray-400 mt-2">Admin: {group.admin}</p>
+          </div>
         </div>
-        <p className="text-gray-300">{group.description}</p>
-        <p className="text-sm text-gray-400 mt-2">Admin: {group.admin}</p>
         {requestError && (
           <p className="text-red-500 text-sm mt-2">{requestError}</p>
         )}
@@ -285,12 +365,20 @@ const GroupDetail = ({ currentUser }) => {
           Members ({members.length})
         </button>
         {isAdmin && (
-          <button
-            onClick={() => setActiveTab('requests')}
-            className={`px-4 py-2 ${activeTab === 'requests' ? 'border-b-2 border-blue-500 text-blue-500' : 'text-gray-400'}`}
-          >
-            Join Requests {joinRequests.filter(req => req.status === 'pending').length > 0 && `(${joinRequests.filter(req => req.status === 'pending').length})`}
-          </button>
+          <>
+            <button
+              onClick={() => setActiveTab('requests')}
+              className={`px-4 py-2 ${activeTab === 'requests' ? 'border-b-2 border-blue-500 text-blue-500' : 'text-gray-400'}`}
+            >
+              Join Requests {joinRequests.filter(req => req.status === 'pending').length > 0 && `(${joinRequests.filter(req => req.status === 'pending').length})`}
+            </button>
+            <button
+              onClick={() => setActiveTab('follow-requests')}
+              className={`px-4 py-2 ${activeTab === 'follow-requests' ? 'border-b-2 border-blue-500 text-blue-500' : 'text-gray-400'}`}
+            >
+              Follow Requests {followRequests.filter(req => req.status === 'pending').length > 0 && `(${followRequests.filter(req => req.status === 'pending').length})`}
+            </button>
+          </>
         )}
       </div>
 
@@ -303,7 +391,7 @@ const GroupDetail = ({ currentUser }) => {
                 value={newPost}
                 onChange={(e) => setNewPost(e.target.value)}
                 placeholder="Write a post..."
-                className="w-full p-3 bg-gray-700 rounded-lg resize-none"
+                className="w-full p-3 bg-gray-700 rounded-lg resize-none text-white"
                 rows="3"
               />
               <button
@@ -320,21 +408,36 @@ const GroupDetail = ({ currentUser }) => {
           ) : (
             <div>
               {posts.map(post => (
-                <div key={post.id} className="bg-gray-800 p-4 rounded-lg mb-4">
+                <div key={post.tweetid || post.id} className="bg-gray-800 p-4 rounded-lg mb-4">
                   <div className="flex items-center mb-2">
-                    <div className="h-10 w-10 rounded-full bg-blue-500 flex items-center justify-center">
-                      {post.username.charAt(0)}
-                    </div>
+                    {post.userphoto ? (
+                      <img
+                        src={`data:image/jpeg;base64,${post.userphoto}`}
+                        alt={post.username}
+                        className="w-10 h-10 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div className="h-10 w-10 rounded-full bg-blue-500 flex items-center justify-center">
+                        {post.username?.charAt(0)?.toUpperCase() || 'U'}
+                      </div>
+                    )}
                     <div className="ml-3">
                       <Link to={`/profile/${post.username}`} className="font-semibold hover:underline">
                         {post.username}
                       </Link>
                       <p className="text-xs text-gray-400">
-                        {new Date(post.created_at).toLocaleString()}
+                        {new Date(post.time_ || post.created_at).toLocaleString()}
                       </p>
                     </div>
                   </div>
-                  <p className="text-gray-200">{post.content}</p>
+                  <p className="text-gray-200">{post.content_ || post.content}</p>
+                  {post.photo && (
+                    <img
+                      src={`data:image/jpeg;base64,${post.photo}`}
+                      alt="Post content"
+                      className="mt-3 rounded-lg max-h-96 object-contain w-full"
+                    />
+                  )}
                 </div>
               ))}
             </div>
@@ -369,7 +472,7 @@ const GroupDetail = ({ currentUser }) => {
                     )}
                     <p>{msg.message}</p>
                     <p className="text-xs text-gray-400 mt-1">
-                      {new Date(msg.time).toLocaleTimeString()}
+                      {new Date(msg.time_).toLocaleTimeString()}
                     </p>
                   </div>
                 </div>
@@ -383,7 +486,7 @@ const GroupDetail = ({ currentUser }) => {
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               placeholder="Type a message..."
-              className="flex-1 p-3 bg-gray-700 rounded-l-lg"
+              className="flex-1 p-3 bg-gray-700 rounded-l-lg text-white"
             />
             <button
               type="submit"
@@ -402,7 +505,7 @@ const GroupDetail = ({ currentUser }) => {
             <div key={member.username} className="bg-gray-800 p-4 rounded-lg mb-2 flex justify-between items-center">
               <div className="flex items-center">
                 <div className="h-10 w-10 rounded-full bg-blue-500 flex items-center justify-center">
-                  {member.username.charAt(0)}
+                  {member.username?.charAt(0)?.toUpperCase() || 'U'}
                 </div>
                 <div className="ml-3">
                   <Link to={`/profile/${member.username}`} className="font-semibold hover:underline">
@@ -427,48 +530,109 @@ const GroupDetail = ({ currentUser }) => {
         </div>
       )}
 
-      {/* Requests Tab */}
+      {/* Join Requests Tab */}
       {activeTab === 'requests' && isAdmin && (
         <div>
-          <h2 className="text-xl font-bold mb-4">Pending Join Requests</h2>
-          {joinRequests.filter(req => req.status === 'pending').length === 0 ? (
-            <p className="text-center text-gray-400">No pending requests</p>
-          ) : (
-            joinRequests
-              .filter(req => req.status === 'pending')
-              .map(request => (
-                <RequestItem
-                  key={request.id}
-                  request={{
-                    ...request,
-                    admin: group.admin // Make sure the admin is passed to RequestItem
-                  }}
-                  type="group"
-                  onRequestUpdate={refreshRequests}
-                  currentUser={currentUser}
-                />
-              ))
+          <h2 className="text-xl font-bold mb-4">Join Requests</h2>
+          
+          {/* Pending Requests */}
+          <div className="mb-6">
+            <h3 className="text-lg font-semibold mb-3">Pending Requests</h3>
+            {joinRequests.filter(req => req.status === 'pending').length === 0 ? (
+              <p className="text-center text-gray-400">No pending requests</p>
+            ) : (
+              joinRequests
+                .filter(req => req.status === 'pending')
+                .map(request => (
+                  <RequestItem
+                    key={request.id}
+                    request={{
+                      ...request,
+                      grp_name: groupName,
+                      admin: group.admin
+                    }}
+                    type="group"
+                    onRequestUpdate={refreshRequests}
+                    currentUser={currentUser}
+                  />
+                ))
+            )}
+          </div>
+
+          {/* Processed Requests */}
+          <div>
+            <h3 className="text-lg font-semibold mb-3">Request History</h3>
+            {joinRequests.filter(req => req.status !== 'pending').length === 0 ? (
+              <p className="text-center text-gray-400">No processed requests</p>
+            ) : (
+              joinRequests
+                .filter(req => req.status !== 'pending')
+                .map(request => (
+                  <RequestItem
+                    key={request.id}
+                    request={{
+                      ...request,
+                      grp_name: groupName,
+                      admin: group.admin
+                    }}
+                    type="group"
+                    onRequestUpdate={refreshRequests}
+                    currentUser={currentUser}
+                  />
+                ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Follow Requests Tab */}
+      {activeTab === 'follow-requests' && isAdmin && (
+        <div>
+          <h2 className="text-xl font-bold mb-4">Follow Requests</h2>
+          
+          {followError && (
+            <p className="text-red-500 text-sm mb-4">{followError}</p>
           )}
           
-          <h2 className="text-xl font-bold mt-6 mb-4">Processed Requests</h2>
-          {joinRequests.filter(req => req.status !== 'pending').length === 0 ? (
-            <p className="text-center text-gray-400">No processed requests</p>
-          ) : (
-            joinRequests
-              .filter(req => req.status !== 'pending')
-              .map(request => (
-                <RequestItem
-                      key={request.id}
-                      request={{
-                        ...request,
-                        admin: group.admin // This line is important
-                      }}
-                      type="group"
-                      onRequestUpdate={refreshRequests}
-                      currentUser={currentUser}
-                    />
-              ))
-          )}
+          {/* Pending Follow Requests */}
+          <div className="mb-6">
+            <h3 className="text-lg font-semibold mb-3">Pending Follow Requests</h3>
+            {followRequests.filter(req => req.status === 'pending').length === 0 ? (
+              <p className="text-center text-gray-400">No pending follow requests</p>
+            ) : (
+              followRequests
+                .filter(req => req.status === 'pending')
+                .map(request => (
+                  <RequestItem
+                    key={request.id}
+                    request={request}
+                    type="follow"
+                    onRequestUpdate={refreshFollowRequests}
+                    currentUser={currentUser}
+                  />
+                ))
+            )}
+          </div>
+
+          {/* Processed Follow Requests */}
+          <div>
+            <h3 className="text-lg font-semibold mb-3">Follow Request History</h3>
+            {followRequests.filter(req => req.status !== 'pending').length === 0 ? (
+              <p className="text-center text-gray-400">No processed follow requests</p>
+            ) : (
+              followRequests
+                .filter(req => req.status !== 'pending')
+                .map(request => (
+                  <RequestItem
+                    key={request.id}
+                    request={request}
+                    type="follow"
+                    onRequestUpdate={refreshFollowRequests}
+                    currentUser={currentUser}
+                  />
+                ))
+            )}
+          </div>
         </div>
       )}
     </div>

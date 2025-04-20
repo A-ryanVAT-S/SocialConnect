@@ -452,7 +452,6 @@ export const requestFollow = async (requester, target) => {
     const response = await fetch(`${API_BASE_URL}/group_posts/${groupName}`);
     return handleResponse(response, 'Failed to fetch group posts');
   };
-
   export const createPost = async (username, content, groupName = null) => {
     const formData = new FormData();
     formData.append('username', username);
@@ -462,7 +461,7 @@ export const requestFollow = async (requester, target) => {
       formData.append('group_name', groupName);
     }
     
-    const response = await fetch(`${API_BASE_URL}/new_post`, {
+    const response = await fetch(`${API_BASE_URL}/new_tweet`, {
       method: 'POST',
       body: formData,
     });

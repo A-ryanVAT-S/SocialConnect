@@ -1,13 +1,10 @@
 from fastapi import FastAPI, Form, File, UploadFile, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
-from typing import Optional, List, Dict, Any
+from typing import Optional
 import pymysql
 import base64
-import binascii
 from datetime import datetime
 import codecs
-import io
 import uvicorn
 import os
 from dotenv import load_dotenv
@@ -92,10 +89,6 @@ def binary_from_photo_object(photo_obj):
         return ""
     content = photo_obj.file.read()
     return base64.b64encode(content).decode("utf-8")
-
-# Import and run database initialization at startup
-
-
 
 
 # Root Endpoint
@@ -264,34 +257,42 @@ def get_full_tweet(tweet_id: int):
         "liked_users": liked_users
     }
 
-# Tweet Endpoints
 @app.post("/new_tweet")
 async def create_tweet(
     username: str = Form(...),
     content: str = Form(...),
-    photo: Optional[UploadFile] = File(None)
+    photo: Optional[UploadFile] = File(None),
+    group_name: Optional[str] = Form(None)
 ):
-    # Process photo if provided
-    photo_base64 = ""
-    if photo:
-        photo_hex = binary_from_photo_object(photo)
-        photo_base64 = hex_to_base64(photo_hex)
-    
-    # Get next tweet ID
-    id_query = "SELECT COALESCE(MAX(tweetid), 0) + 1 AS next_id FROM tweet"
-    next_id_data = execute_query(id_query)
-    tweet_id = next_id_data[0]["next_id"] if next_id_data else 1
-    
-    # Insert new tweet
-    insert_query = """
-    INSERT INTO tweet (tweetid, content_, photo, time_, author)
-    VALUES (%s, %s, %s, CURRENT_TIMESTAMP, %s)
-    """
-    params = (tweet_id, content, photo_base64 if photo_base64 else None, username)
-    
-    execute_query(insert_query, params, fetch=False, commit=True)
-    
-    return {"status": "success", "message": "Tweet created", "tweet_id": tweet_id}
+    try:
+        connection = pymysql.connect(**DB_CONFIG)
+        with connection.cursor() as cursor:
+            # Generate a unique tweet ID
+            cursor.execute("SELECT MAX(tweetid) FROM tweet")
+            result = cursor.fetchone()
+            new_tweet_id = (result['MAX(tweetid)'] or 0) + 1
+            
+            # Process photo if provided
+            photo_data = None
+            if photo:
+                contents = await photo.read()
+                photo_data = base64.b64encode(contents).decode('utf-8')
+            
+            # Insert tweet
+            query = """
+            INSERT INTO tweet (tweetid, content_, photo, author, group_name)
+            VALUES (%s, %s, %s, %s, %s)
+            """
+            cursor.execute(query, (new_tweet_id, content, photo_data, username, group_name))
+            connection.commit()
+            
+            return {"status": "success", "tweet_id": new_tweet_id}
+    except Exception as e:
+        print(f"Error creating tweet: {e}")
+        return {"error": str(e)}
+    finally:
+        connection.close()
+
 
 @app.get("/delete_tweet/{tweet_id}")
 def delete_tweet(tweet_id: int):
@@ -549,8 +550,6 @@ def delete_poll(poll_id: int):
     
     return {"status": "success", "message": "Poll deleted"}
 
-
-# Group Endpoints
 @app.post("/new_group")
 async def create_group(
     admin: str = Form(...),
@@ -561,8 +560,8 @@ async def create_group(
     # Process photo if provided
     photo_base64 = ""
     if groupphoto:
-        photo_hex = binary_from_photo_object(groupphoto)
-        photo_base64 = hex_to_base64(photo_hex)
+        # Just get the base64 directly - no need for intermediate hex conversion
+        photo_base64 = binary_from_photo_object(groupphoto)
     
     # Check if group already exists
     check_query = "SELECT grpname FROM group_ WHERE grpname = %s"
@@ -665,23 +664,42 @@ def get_group_members(group_name: str):
     data = execute_query(query, (group_name,))
     return data
 
-# Group Posts Endpoint
 @app.get("/group_posts/{group_name}")
-def get_group_posts(group_name: str):
-    """Get all posts for a specific group"""
-    query = """
-    SELECT tweet.tweetid, tweet.content_, tweet.photo, tweet.time_,
-           users.username, CONCAT(users.fname, ' ', users.lname) AS author, users.photo AS userphoto
-    FROM tweet
-    INNER JOIN users ON tweet.author = users.username
-    WHERE tweet.group_name = %s
-    ORDER BY tweet.time_ DESC
-    """
-    
-    data = execute_query(query, (group_name,))
-    return data
+async def get_group_posts(group_name: str):
+    try:
+        connection = pymysql.connect(**DB_CONFIG)
+        with connection.cursor() as cursor:
+            # Query should use group_name to filter posts
+            query = """
+            SELECT tweet.tweetid, tweet.content_, tweet.photo, tweet.time_,
+                   users.username, CONCAT(users.fname, ' ', users.lname) AS author, users.photo AS userphoto
+            FROM tweet
+            INNER JOIN users ON tweet.author = users.username
+            WHERE tweet.group_name = %s
+            ORDER BY tweet.time_ DESC
+            """
+            cursor.execute(query, (group_name,))
+            posts = cursor.fetchall()
+            
+            # Convert datetime objects to ISO format
+            for post in posts:
+                if post.get('time_'):
+                    post['time_'] = post['time_'].isoformat()
+                
+                # Convert photo to URL if needed
+                if post.get('photo'):
+                    post['photo'] = f"/images/{post['tweetid']}.jpg"  # Or however you handle images
+                
+                if post.get('userphoto'):
+                    post['userphoto'] = f"/profiles/{post['username']}.jpg"  # Or however you handle profile photos
+            
+            return posts
+    except Exception as e:
+        print(f"Error fetching group posts: {e}")
+        return {"error": str(e)}
+    finally:
+        connection.close()
 
-# New Post Endpoint
 @app.post("/new_post")
 async def create_post(
     username: str = Form(...),
@@ -693,8 +711,8 @@ async def create_post(
     # Process photo if provided
     photo_base64 = ""
     if photo:
-        photo_hex = binary_from_photo_object(photo)
-        photo_base64 = hex_to_base64(photo_hex)
+        # Just get the base64 directly - no need for intermediate hex conversion
+        photo_base64 = binary_from_photo_object(photo)
     
     # Get next tweet ID
     id_query = "SELECT COALESCE(MAX(tweetid), 0) + 1 AS next_id FROM tweet"
